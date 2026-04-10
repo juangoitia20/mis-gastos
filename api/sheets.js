@@ -208,7 +208,7 @@ async function saveTransaction(data) {
   const dd = String(d.getDate()).padStart(2,'0');
   const mm = String(d.getMonth()+1).padStart(2,'0');
   const yyyy = d.getFullYear();
-  const dateStr = `${dd}/${mm}/${yyyy}`;
+  const dateStr = `${mm}/${dd}/${yyyy}`;
 
   const writeRange = `${sheetName}!${colLetter(col)}${targetRow}:${colLetter(col+3)}${targetRow}`;
   await sheets.spreadsheets.values.update({
@@ -229,7 +229,7 @@ async function updateTransaction(data) {
   const dd   = String(d.getDate()).padStart(2,'0');
   const mm   = String(d.getMonth()+1).padStart(2,'0');
   const yyyy = d.getFullYear();
-  const dateStr = `${dd}/${mm}/${yyyy}`;
+  const dateStr = `${mm}/${dd}/${yyyy}`;
 
   const sheets = await getSheets();
   const range  = `${sheetName}!${colLetter(startCol)}${row}:${colLetter(startCol+3)}${row}`;
