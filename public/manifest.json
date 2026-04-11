@@ -3,11 +3,12 @@
   "short_name": "Gastos",
   "description": "Control de gastos e ingresos personales",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#F2F1EF",
+  "background_color": "#534AB7",
   "theme_color": "#534AB7",
-  "lang": "es",
+  "lang": "es-CL",
   "icons": [
     {
       "src": "/icons/icon-192.png",
