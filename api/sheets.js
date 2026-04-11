@@ -78,14 +78,19 @@ function rangeA1(sheet, startRow, startCol, numRows, numCols) {
   return `${sheet}!${c1}${startRow}:${c2}${startRow + numRows - 1}`;
 }
 
-// Convierte número serial de Excel/Sheets a Date
+// Convierte número serial de Sheets a Date local correcta.
+// Sin este fix, en Chile (UTC-3/-4) la fecha aparece un día antes.
 function serialToDate(v) {
   if (v instanceof Date) return v;
-  if (typeof v === 'string' && v.match(/^\d{4}-/)) return new Date(v);
+  if (typeof v === 'string' && v.match(/^\d{4}-/)) {
+    const [y, m, d] = v.split('T')[0].split('-').map(Number);
+    return new Date(y, m - 1, d);        // fecha local, sin UTC shift
+  }
   if (typeof v === 'number') {
-    // Epoch de Sheets: 1 = 1 enero 1900
-    const ms = (v - 25569) * 86400000;
-    return new Date(ms);
+    const ms  = (v - 25569) * 86400000;
+    const utc = new Date(ms);
+    // Reconstruir con componentes UTC → evita interpretación como día anterior
+    return new Date(utc.getUTCFullYear(), utc.getUTCMonth(), utc.getUTCDate());
   }
   return null;
 }
@@ -118,18 +123,39 @@ async function getConfig() {
 }
 
 async function getMonthData(monthName) {
-  const sheets  = await getSheets();
-  // Leer columnas A–AC desde la fila DATA_START_ROW
-  const range   = `${monthName}!A${DATA_START_ROW}:AC`;
-  const res     = await sheets.spreadsheets.values.get({
-    spreadsheetId: SS_ID, range,
-    valueRenderOption: 'UNFORMATTED_VALUE',
-    dateTimeRenderOption: 'SERIAL_NUMBER'
-  });
+  const sheets = await getSheets();
 
-  const rows = res.data.values || [];
-  if (!rows.length) return { transactions: [], summary: buildSummary([]) };
+  // Leer en un solo batch: transacciones + celdas de resumen calculadas por el sheet
+  const [txRes, summaryRes] = await Promise.all([
+    sheets.spreadsheets.values.get({
+      spreadsheetId: SS_ID,
+      range: `${monthName}!A${DATA_START_ROW}:AC`,
+      valueRenderOption: 'UNFORMATTED_VALUE',
+      dateTimeRenderOption: 'SERIAL_NUMBER'
+    }),
+    // G2=Egresos, Q2=Diferencia, A16=%Ahorro (celdas con fórmulas del sheet)
+    sheets.spreadsheets.values.batchGet({
+      spreadsheetId: SS_ID,
+      ranges: [
+        `${monthName}!G2`,   // Egresos
+        `${monthName}!Q2`,   // Diferencia
+        `${monthName}!A16`,  // % Ahorro
+      ],
+      valueRenderOption: 'UNFORMATTED_VALUE'
+    })
+  ]);
 
+  // ── Parsear celdas de resumen ──────────────────────────────
+  const sv = summaryRes.data.valueRanges;
+  const egresos    = Number((sv[0]?.values?.[0]?.[0]) ?? 0);
+  const diferencia = Number((sv[1]?.values?.[0]?.[0]) ?? 0);
+  const pctRaw     = Number((sv[2]?.values?.[0]?.[0]) ?? 0);
+  // El sheet puede guardar % como fracción (0.2092) o entero (20.92)
+  const pctAhorro  = pctRaw <= 1 && pctRaw >= -1 ? pctRaw * 100 : pctRaw;
+  const ingresos   = egresos + diferencia;  // Ingresos = Egresos + Diferencia
+
+  // ── Parsear transacciones ──────────────────────────────────
+  const rows = txRes.data.values || [];
   const transactions = [];
 
   for (const cat of CATEGORIES) {
@@ -158,24 +184,42 @@ async function getMonthData(monthName) {
   }
 
   transactions.sort((a, b) => new Date(b.date) - new Date(a.date));
-  return { transactions, summary: buildSummary(transactions) };
+
+  // byCategory sigue calculándose desde transacciones (detalle correcto)
+  const byCategory = {};
+  for (const cat of CATEGORIES) {
+    byCategory[cat.name] = transactions
+      .filter(t => t.category === cat.name)
+      .reduce((s, t) => s + t.amount, 0);
+  }
+
+  return {
+    transactions,
+    summary: { ingresos, egresos, diferencia, pctAhorro, byCategory }
+  };
 }
 
 async function getAnnualSummary() {
   const sheets = await getSheets();
-  const range  = 'Presupuesto!I4:M15';
-  const res    = await sheets.spreadsheets.values.get({
-    spreadsheetId: SS_ID, range,
+
+  // Leer G2 (Egresos) y Q2 (Diferencia) de cada hoja mensual en un solo batch.
+  // Mismas celdas que usa getMonthData, garantizando consistencia.
+  const ranges = MONTHS.flatMap(m => [`${m}!G2`, `${m}!Q2`]);
+
+  const res = await sheets.spreadsheets.values.batchGet({
+    spreadsheetId: SS_ID,
+    ranges,
     valueRenderOption: 'UNFORMATTED_VALUE'
   });
-  const rows = res.data.values || [];
-  const months = rows.map((row, i) => ({
-    month:      MONTHS[i],
-    ingresos:   Number(row[1]) || 0,
-    egresos:    Number(row[2]) || 0,
-    diferencia: Number(row[3]) || 0,
-    pct:        Number(row[4]) || 0
-  }));
+
+  const vr = res.data.valueRanges;
+  const months = MONTHS.map((month, i) => {
+    const egresos    = Number(vr[i * 2    ]?.values?.[0]?.[0] ?? 0);
+    const diferencia = Number(vr[i * 2 + 1]?.values?.[0]?.[0] ?? 0);
+    const ingresos   = egresos + diferencia;
+    return { month, ingresos, egresos, diferencia };
+  });
+
   return { months };
 }
 
