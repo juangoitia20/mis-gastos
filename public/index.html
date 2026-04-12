@@ -167,6 +167,9 @@ body {
 /* ─── CHART CARD ─── */
 .chart-card { background: var(--surface); border-radius: var(--radius); border: 0.5px solid var(--border); padding: 16px; }
 .chart-layout { display: flex; align-items: center; gap: 16px; }
+.chart-donut-pair { display: flex; align-items: center; justify-content: space-around; gap: 8px; width: 100%; }
+.chart-donut-item { display: flex; flex-direction: column; align-items: center; gap: 4px; flex: 1; min-width: 0; }
+.chart-donut-lbl { font-size: 10px; color: var(--muted); text-align: center; }
 .chart-canvas-wrap { width: 30vw; max-width: 130px; height: 30vw; max-height: 130px; flex-shrink: 0; position: relative; }
 .chart-center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; pointer-events: none; }
 .chart-center-val { font-size: 13px; font-weight: 700; color: var(--text); }
@@ -286,12 +289,9 @@ textarea.form-control { resize: none; height: 80px; line-height: 1.5; }
 /* ─── MODO PRIVACIDAD ─── */
 .privacy-mask {
   display: inline-block;
-  background: var(--muted);
-  border-radius: 4px;
-  min-width: 52px;
-  height: 13px;
-  vertical-align: middle;
-  color: transparent;
+  color: var(--muted);
+  font-weight: 600;
+  letter-spacing: 0.04em;
   user-select: none;
 }
 
@@ -561,6 +561,7 @@ const S = {
   pendingDelete: null,
   activeTx:      null,
   donutChart:    null,
+  donutChart2:   null,
   annualChart:   null,
   debounce:      null,
   _histTxs:      [],
@@ -630,10 +631,20 @@ function togglePrivacy() {
   if (S.monthData[m]) renderResumen(S.monthData[m]);
   const mh = MONTHS[S.histMonth];
   if (S.monthData[mh]) _renderHistList(S.monthData[mh]);
+  // Actualizar etiqueta central del donut izquierdo (sin redibujar el chart)
+  const cv = document.getElementById('donut-center-val');
+  if (cv) {
+    const data = S.monthData[m];
+    if (data) {
+      const total = Object.entries(data.summary.byCategory)
+        .filter(([k,v])=>k!=='INGRESOS'&&v>0).reduce((s,[,v])=>s+v,0);
+      cv.innerHTML = valuesHidden ? '$ ••••' : fmtCLPShort(total);
+    }
+  }
 }
 // Devuelve valor formateado o máscara según estado de privacidad
 function maskVal(formatted) {
-  return valuesHidden ? '<span class="privacy-mask"></span>' : formatted;
+  return valuesHidden ? '<span class="privacy-mask">$ ••••</span>' : formatted;
 }
 (function applyTheme() {
   document.documentElement.setAttribute('data-theme', localStorage.getItem('app_theme') || 'light');
@@ -702,11 +713,11 @@ function renderResumen(data) {
   const dif = s.ingresos - s.egresos;
   setMetric('m-diferencia', Math.abs(dif), dif>=0?'green':'red', true);
   const pct = s.pctAhorro||0;
-  document.getElementById('m-ahorro').innerHTML = maskVal(pct.toFixed(1)+'%');
+  document.getElementById('m-ahorro').textContent = pct.toFixed(1)+'%';
   document.getElementById('m-ahorro').className = 'metric-value '+(pct>=0?'green':'red');
-  renderDonut(s.byCategory);
+  renderDonut(s.byCategory, data.transactions);
   renderCatBars(s.byCategory);
-  const recent = (data.transactions||[]).slice(0,8);
+  const recent = (data.transactions||[]).slice(0,3);
   document.getElementById('recent-list').innerHTML = recent.length
     ? recent.map(t => txHTML(t)).join('')
     : '<div class="empty"><div class="empty-icon">📝</div>Sin transacciones<div class="empty-hint">Agrega tu primer registro</div></div>';
@@ -718,33 +729,93 @@ function setMetric(id, val, cls, currency) {
 }
 
 // ════ DONUT ════
-function renderDonut(byCategory) {
+// Paleta extendida para subcategorías (hasta 20 entradas)
+const SUBCAT_PALETTE = [
+  '#534AB7','#D85A30','#1D9E75','#D4537E','#378ADD','#639922',
+  '#BA7517','#8B5CF6','#EC4899','#14B8A6','#F59E0B','#EF4444',
+  '#6366F1','#84CC16','#06B6D4','#A855F7','#F97316','#10B981',
+  '#3B82F6','#E11D48'
+];
+function renderDonut(byCategory, transactions) {
   const cats = Object.entries(byCategory).filter(([k,v]) => k!=='INGRESOS' && v>0);
   const card = document.getElementById('chart-card');
   if (!cats.length) { card.innerHTML='<div class="empty"><div class="empty-icon">📊</div>Sin egresos</div>'; return; }
   const total = cats.reduce((s,[,v])=>s+v,0);
+
+  // ── Subcategorías del mes (excluye INGRESOS) ──────────────
+  const subcatMap = {};
+  (transactions||[]).filter(t=>t.category!=='INGRESOS' && t.amount>0).forEach(t=>{
+    subcatMap[t.subcategory] = (subcatMap[t.subcategory]||0) + t.amount;
+  });
+  const subcats = Object.entries(subcatMap).sort((a,b)=>b[1]-a[1]);
+
+  // Porcentaje para el centro del donut izquierdo (% del total general)
+  const totalLabel = valuesHidden ? '$ ••••' : fmtCLPShort(total);
+
   card.innerHTML = `
-    <div class="chart-layout">
-      <div class="chart-canvas-wrap">
-        <canvas id="donut-canvas"></canvas>
-        <div class="chart-center">
-          <div class="chart-center-val">${fmtCLPShort(total)}</div>
-          <div class="chart-center-lbl">total egresos</div>
+    <div class="chart-donut-pair">
+      <div class="chart-donut-item">
+        <div class="chart-canvas-wrap">
+          <canvas id="donut-canvas"></canvas>
+          <div class="chart-center">
+            <div class="chart-center-val" id="donut-center-val">${totalLabel}</div>
+            <div class="chart-center-lbl">total egresos</div>
+          </div>
         </div>
+        <div class="chart-donut-lbl">Por categoría</div>
       </div>
-      <div class="chart-legend">${cats.map(([k,v])=>`
-        <div class="legend-row">
-          <div class="legend-dot" style="background:${CAT_COLORS[k]||'#888'}"></div>
-          <div class="legend-name">${cap(k)}</div>
-          <div class="legend-val">${fmtCLPShort(v)}</div>
-        </div>`).join('')}
+      <div class="chart-donut-item">
+        <div class="chart-canvas-wrap">
+          <canvas id="donut-canvas2"></canvas>
+          <div class="chart-center">
+            <div class="chart-center-val">${subcats.length}</div>
+            <div class="chart-center-lbl">subcategorías</div>
+          </div>
+        </div>
+        <div class="chart-donut-lbl">Por subcategoría</div>
       </div>
     </div>`;
+
+  // ── Donut izquierdo: categorías ──────────────────────────
   if (S.donutChart) { S.donutChart.destroy(); S.donutChart=null; }
   S.donutChart = new Chart(document.getElementById('donut-canvas').getContext('2d'), {
     type: 'doughnut',
-    data: { labels: cats.map(([k])=>cap(k)), datasets: [{ data: cats.map(([,v])=>v), backgroundColor: cats.map(([k])=>CAT_COLORS[k]||'#888'), borderWidth: 0, hoverOffset: 4 }] },
-    options: { cutout:'68%', responsive:true, maintainAspectRatio:false, plugins:{ legend:{display:false}, tooltip:{ callbacks:{label:c=>' '+fmtCLP(c.parsed)} } } }
+    data: {
+      labels: cats.map(([k])=>cap(k)),
+      datasets: [{ data: cats.map(([,v])=>v), backgroundColor: cats.map(([k])=>CAT_COLORS[k]||'#888'), borderWidth: 0, hoverOffset: 4 }]
+    },
+    options: {
+      cutout:'68%', responsive:true, maintainAspectRatio:false,
+      plugins:{
+        legend:{display:false},
+        tooltip:{ callbacks:{ label: c => {
+          const pct = total > 0 ? (c.parsed/total*100).toFixed(1) : 0;
+          return ` ${c.label}: ${pct}%`;
+        }}}
+      }
+    }
+  });
+
+  // ── Donut derecho: subcategorías ─────────────────────────
+  if (S.donutChart2) { S.donutChart2.destroy(); S.donutChart2=null; }
+  if (!subcats.length) return;
+  const subTotal = subcats.reduce((s,[,v])=>s+v,0);
+  S.donutChart2 = new Chart(document.getElementById('donut-canvas2').getContext('2d'), {
+    type: 'doughnut',
+    data: {
+      labels: subcats.map(([k])=>k),
+      datasets: [{ data: subcats.map(([,v])=>v), backgroundColor: subcats.map((_,i)=>SUBCAT_PALETTE[i%SUBCAT_PALETTE.length]), borderWidth: 0, hoverOffset: 4 }]
+    },
+    options: {
+      cutout:'68%', responsive:true, maintainAspectRatio:false,
+      plugins:{
+        legend:{display:false},
+        tooltip:{ callbacks:{ label: c => {
+          const pct = subTotal > 0 ? (c.parsed/subTotal*100).toFixed(1) : 0;
+          return ` ${c.label}: ${pct}%`;
+        }}}
+      }
+    }
   });
 }
 
@@ -757,8 +828,9 @@ function renderCatBars(byCategory) {
     ? cats.map(([cat,val])=>{
         const pct     = (val / total * 100).toFixed(1);
         const color   = CAT_COLORS[cat]||'#888';
+        // El % siempre visible — privacidad solo afecta montos nominales
         const amtHtml = valuesHidden
-          ? '<span class="privacy-mask"></span>'
+          ? `<span style="font-size:10px;font-weight:400;opacity:0.65">${pct}%</span> <span class="privacy-mask">$ ••••</span>`
           : `${fmtCLP(val)}<span style="font-size:10px;font-weight:400;opacity:0.65;margin-left:4px">${pct}%</span>`;
         return `
       <div class="cat-row">
@@ -1040,7 +1112,7 @@ function txHTML(t) {
       ${t.note?`<div class="tx-note">${escHtml(t.note)}</div>`:''}
     </div>
     <div class="tx-right">
-      <div class="tx-amount ${cls}">${sign}${maskVal(fmtCLP(t.amount))}</div>
+      <div class="tx-amount ${cls}">${valuesHidden ? '<span class="privacy-mask">$ ••••</span>' : sign+fmtCLP(t.amount)}</div>
       <div class="tx-date">${fmtDate(t.date)}</div>
     </div>
   </div>`;
