@@ -283,6 +283,18 @@ textarea.form-control { resize: none; height: 80px; line-height: 1.5; }
 .empty-icon { font-size: 30px; margin-bottom: 10px; }
 .empty-hint { font-size: 12px; color: var(--hint); margin-top: 6px; }
 
+/* ─── MODO PRIVACIDAD ─── */
+.privacy-mask {
+  display: inline-block;
+  background: var(--muted);
+  border-radius: 4px;
+  min-width: 52px;
+  height: 13px;
+  vertical-align: middle;
+  color: transparent;
+  user-select: none;
+}
+
 /* ═══════════════════════════════════════════
    DESKTOP >=540px — capa adicional
 ═══════════════════════════════════════════ */
@@ -318,7 +330,7 @@ textarea.form-control { resize: none; height: 80px; line-height: 1.5; }
     <div class="pin-dot" id="pd2"></div>
     <div class="pin-dot" id="pd3"></div>
   </div>
-  <div class="pin-pad">
+  <div class="pin-pad" id="pin-pad-wrap">
     <button class="pin-key" onclick="pinKey('1')">1</button>
     <button class="pin-key" onclick="pinKey('2')">2</button>
     <button class="pin-key" onclick="pinKey('3')">3</button>
@@ -345,6 +357,7 @@ textarea.form-control { resize: none; height: 80px; line-height: 1.5; }
         <div class="header-left"><div class="header-sub">Resumen mensual</div></div>
         <div class="header-right">
           <button class="icon-btn" onclick="toggleDark()">🌙</button>
+          <button class="icon-btn" id="privacy-btn" onclick="togglePrivacy()" title="Ocultar valores">👁️</button>
           <div class="month-nav">
             <button onclick="changeMonth(-1)">&#8249;</button>
             <div class="month-label" id="month-label">—</div>
@@ -549,23 +562,31 @@ const S = {
   activeTx:      null,
   donutChart:    null,
   annualChart:   null,
-  debounce:      null
+  debounce:      null,
+  _histTxs:      [],
+  _histShown:    10
 };
 const txStore = {};
+let valuesHidden = false; // estado del botón de privacidad
 
 // ════ PIN ════
 let pinBuf = '', pinPhase = 'enter', pinTemp = '';
+let _pinFromSheet = null; // PIN cargado desde Puntuales!C30
 
-function initPin() {
-  const saved = localStorage.getItem('app_pin');
-  if (saved) {
-    pinPhase = 'enter';
-    document.getElementById('pin-title').textContent = 'Bienvenido';
-    document.getElementById('pin-sub').textContent   = 'Ingresa tu PIN para continuar';
-  } else {
-    pinPhase = 'setup1';
-    document.getElementById('pin-title').textContent = 'Crear PIN';
-    document.getElementById('pin-sub').textContent   = 'Elige un PIN de 4 dígitos';
+async function initPin() {
+  // El PIN vive en Puntuales!C30 del Sheet.
+  // No existe flujo de "crear PIN" en el dispositivo.
+  document.getElementById('pin-title').textContent = 'Mis Gastos';
+  document.getElementById('pin-sub').textContent   = 'Cargando…';
+  document.getElementById('pin-pad-wrap').style.pointerEvents = 'none';
+  try {
+    const res  = await fetch('/api/sheets?action=getPin');
+    const data = await res.json();
+    _pinFromSheet = String(data.pin ?? '').trim();
+    document.getElementById('pin-sub').textContent = 'Ingresa tu PIN para continuar';
+    document.getElementById('pin-pad-wrap').style.pointerEvents = '';
+  } catch(e) {
+    document.getElementById('pin-error').textContent = 'Sin conexión. Verifica tu red.';
   }
 }
 function pinKey(d) {
@@ -578,21 +599,15 @@ function updateDots() {
   for (let i=0;i<4;i++) document.getElementById('pd'+i).classList.toggle('filled', i < pinBuf.length);
 }
 function processPin() {
-  const saved = localStorage.getItem('app_pin');
-  if (pinPhase === 'enter') {
-    if (pinBuf === saved) { unlockApp(); }
-    else { document.getElementById('pin-error').textContent = 'PIN incorrecto.'; pinBuf=''; updateDots(); }
-  } else if (pinPhase === 'setup1') {
-    pinTemp = pinBuf; pinPhase = 'setup2';
-    document.getElementById('pin-sub').textContent = 'Confirma tu PIN';
-    pinBuf=''; updateDots();
-  } else if (pinPhase === 'setup2') {
-    if (pinBuf === pinTemp) { localStorage.setItem('app_pin', pinBuf); unlockApp(); }
-    else {
-      document.getElementById('pin-error').textContent = 'No coinciden. Intenta de nuevo.';
-      pinPhase='setup1'; document.getElementById('pin-sub').textContent='Elige un PIN de 4 dígitos';
-      pinBuf=''; pinTemp=''; updateDots();
-    }
+  if (!_pinFromSheet) {
+    document.getElementById('pin-error').textContent = 'PIN no cargado. Verifica tu conexión.';
+    pinBuf = ''; updateDots(); return;
+  }
+  if (pinBuf === _pinFromSheet) {
+    unlockApp();
+  } else {
+    document.getElementById('pin-error').textContent = 'PIN incorrecto.';
+    pinBuf = ''; updateDots();
   }
 }
 function unlockApp() {
@@ -606,6 +621,19 @@ function toggleDark() {
   const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
   document.documentElement.setAttribute('data-theme', next);
   localStorage.setItem('app_theme', next);
+}
+function togglePrivacy() {
+  valuesHidden = !valuesHidden;
+  document.getElementById('privacy-btn').textContent = valuesHidden ? '🙈' : '👁️';
+  // Refrescar ambas vistas con el nuevo estado
+  const m = MONTHS[S.currentMonth];
+  if (S.monthData[m]) renderResumen(S.monthData[m]);
+  const mh = MONTHS[S.histMonth];
+  if (S.monthData[mh]) _renderHistList(S.monthData[mh]);
+}
+// Devuelve valor formateado o máscara según estado de privacidad
+function maskVal(formatted) {
+  return valuesHidden ? '<span class="privacy-mask"></span>' : formatted;
 }
 (function applyTheme() {
   document.documentElement.setAttribute('data-theme', localStorage.getItem('app_theme') || 'light');
@@ -674,7 +702,7 @@ function renderResumen(data) {
   const dif = s.ingresos - s.egresos;
   setMetric('m-diferencia', Math.abs(dif), dif>=0?'green':'red', true);
   const pct = s.pctAhorro||0;
-  document.getElementById('m-ahorro').textContent = pct.toFixed(1)+'%';
+  document.getElementById('m-ahorro').innerHTML = maskVal(pct.toFixed(1)+'%');
   document.getElementById('m-ahorro').className = 'metric-value '+(pct>=0?'green':'red');
   renderDonut(s.byCategory);
   renderCatBars(s.byCategory);
@@ -685,7 +713,7 @@ function renderResumen(data) {
 }
 function setMetric(id, val, cls, currency) {
   const el = document.getElementById(id);
-  el.textContent = currency ? fmtCLP(val) : val;
+  el.innerHTML = currency ? maskVal(fmtCLP(val)) : val;
   el.className = 'metric-value '+cls;
 }
 
@@ -722,16 +750,24 @@ function renderDonut(byCategory) {
 
 // ════ CAT BARS ════
 function renderCatBars(byCategory) {
-  const cats = Object.entries(byCategory).filter(([k])=>k!=='INGRESOS');
-  const max  = Math.max(...cats.map(([,v])=>v),1);
+  const cats  = Object.entries(byCategory).filter(([k])=>k!=='INGRESOS');
+  const max   = Math.max(...cats.map(([,v])=>v), 1);
+  const total = cats.reduce((s,[,v])=>s+v, 0) || 1;
   document.getElementById('cat-list').innerHTML = cats.length
-    ? cats.map(([cat,val])=>`
+    ? cats.map(([cat,val])=>{
+        const pct     = (val / total * 100).toFixed(1);
+        const color   = CAT_COLORS[cat]||'#888';
+        const amtHtml = valuesHidden
+          ? '<span class="privacy-mask"></span>'
+          : `${fmtCLP(val)}<span style="font-size:10px;font-weight:400;opacity:0.65;margin-left:4px">${pct}%</span>`;
+        return `
       <div class="cat-row">
-        <div class="cat-dot" style="background:${CAT_COLORS[cat]||'#888'}"></div>
+        <div class="cat-dot" style="background:${color}"></div>
         <div class="cat-name">${cap(cat)}</div>
-        <div class="cat-bar-track"><div class="cat-bar-fill" style="width:${(val/max*100).toFixed(1)}%;background:${CAT_COLORS[cat]||'#888'}"></div></div>
-        <div class="cat-amount" style="color:${CAT_COLORS[cat]||'#888'}">${fmtCLP(val)}</div>
-      </div>`).join('')
+        <div class="cat-bar-track"><div class="cat-bar-fill" style="width:${(val/max*100).toFixed(1)}%;background:${color}"></div></div>
+        <div class="cat-amount" style="color:${color}">${amtHtml}</div>
+      </div>`;
+      }).join('')
     : '<div class="empty">Sin egresos</div>';
 }
 
@@ -875,9 +911,34 @@ function _renderHistList(data) {
   const tv = document.getElementById('totals-value');
   tv.textContent = (total>=0?'+':'')+fmtCLP(total);
   tv.style.color = total>=0 ? 'var(--green)' : 'var(--red)';
-  document.getElementById('hist-list').innerHTML = txs.length
-    ? txs.map(t=>txHTML(t)).join('')
-    : '<div class="empty"><div class="empty-icon">📭</div>Sin resultados<div class="empty-hint">Prueba otro filtro</div></div>';
+  // Guardar lista filtrada completa y renderizar primera página
+  S._histTxs   = txs;
+  S._histShown = 10;
+  _renderHistPage();
+}
+function _renderHistPage() {
+  const txs    = S._histTxs  || [];
+  const shown  = S._histShown || 10;
+  const slice  = txs.slice(0, shown);
+  const rest   = txs.length - shown;
+  const listEl = document.getElementById('hist-list');
+  if (!txs.length) {
+    listEl.innerHTML = '<div class="empty"><div class="empty-icon">📭</div>Sin resultados<div class="empty-hint">Prueba otro filtro</div></div>';
+    return;
+  }
+  listEl.innerHTML = slice.map(t => txHTML(t)).join('')
+    + (rest > 0
+        ? `<div style="padding:14px 16px">
+             <button onclick="loadMoreHist()"
+               style="width:100%;padding:12px;background:var(--surface2);border:0.5px solid var(--border);border-radius:var(--radius-sm);font-size:13px;font-weight:600;color:var(--muted);cursor:pointer">
+               Ver ${Math.min(rest, 10)} más · ${rest} restantes
+             </button>
+           </div>`
+        : '');
+}
+function loadMoreHist() {
+  S._histShown = (S._histShown || 10) + 10;
+  _renderHistPage();
 }
 function setFilter(cat) {
   S.activeFilter=cat;
@@ -979,7 +1040,7 @@ function txHTML(t) {
       ${t.note?`<div class="tx-note">${escHtml(t.note)}</div>`:''}
     </div>
     <div class="tx-right">
-      <div class="tx-amount ${cls}">${sign}${fmtCLP(t.amount)}</div>
+      <div class="tx-amount ${cls}">${sign}${maskVal(fmtCLP(t.amount))}</div>
       <div class="tx-date">${fmtDate(t.date)}</div>
     </div>
   </div>`;
@@ -988,7 +1049,15 @@ function txHTML(t) {
 // ════ HELPERS ════
 function fmtCLP(n) { if(!n&&n!==0)return'—'; return'$'+Math.round(Math.abs(n)).toLocaleString('es-CL'); }
 function fmtCLPShort(n) { if(!n)return'$0'; const a=Math.abs(n); if(a>=1e6)return'$'+(n/1e6).toFixed(1)+'M'; if(a>=1e3)return'$'+Math.round(n/1e3)+'k'; return'$'+Math.round(n); }
-function fmtDate(iso) { try{return new Date(iso).toLocaleDateString('es-CL',{day:'numeric',month:'short'});}catch(e){return iso?iso.slice(0,10):'';} }
+function fmtDate(iso) {
+  if (!iso) return '';
+  try {
+    // Extraer YYYY-MM-DD directamente del string, sin pasar por Date()
+    // para evitar cualquier desfase de zona horaria en el navegador.
+    const [y, m, d] = iso.slice(0, 10).split('-').map(Number);
+    return new Date(y, m - 1, d).toLocaleDateString('es-CL', { day: 'numeric', month: 'short' });
+  } catch(e) { return iso ? iso.slice(0, 10) : ''; }
+}
 function cap(s) { return s?s.charAt(0)+s.slice(1).toLowerCase():''; }
 function escHtml(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function showToast(msg,isError) {
