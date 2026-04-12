@@ -78,21 +78,23 @@ function rangeA1(sheet, startRow, startCol, numRows, numCols) {
   return `${sheet}!${c1}${startRow}:${c2}${startRow + numRows - 1}`;
 }
 
-// Convierte número serial de Sheets a Date local correcta.
-// Sin este fix, en Chile (UTC-3/-4) la fecha aparece un día antes.
-function serialToDate(v) {
-  if (v instanceof Date) return v;
-  if (typeof v === 'string' && v.match(/^\d{4}-/)) {
-    const [y, m, d] = v.split('T')[0].split('-').map(Number);
-    return new Date(y, m - 1, d);        // fecha local, sin UTC shift
-  }
+// Convierte número serial de Sheets a string ISO con hora fijada al mediodía UTC.
+// Usar T12:00:00.000Z garantiza que en cualquier zona horaria (incluidos cambios
+// horario invierno/verano de Chile) la fecha local sea siempre la correcta.
+function serialToDateStr(v) {
+  const pad = n => String(n).padStart(2, '0');
+  let y, m, d;
   if (typeof v === 'number') {
-    const ms  = (v - 25569) * 86400000;
-    const utc = new Date(ms);
-    // Reconstruir con componentes UTC → evita interpretación como día anterior
-    return new Date(utc.getUTCFullYear(), utc.getUTCMonth(), utc.getUTCDate());
+    const utc = new Date((v - 25569) * 86400000);
+    y = utc.getUTCFullYear(); m = utc.getUTCMonth() + 1; d = utc.getUTCDate();
+  } else if (typeof v === 'string' && v.match(/^\d{4}-/)) {
+    [y, m, d] = v.slice(0, 10).split('-').map(Number);
+  } else if (v instanceof Date) {
+    y = v.getUTCFullYear(); m = v.getUTCMonth() + 1; d = v.getUTCDate();
+  } else {
+    return null;
   }
-  return null;
+  return `${y}-${pad(m)}-${pad(d)}T12:00:00.000Z`;
 }
 
 function buildSummary(transactions) {
@@ -117,6 +119,21 @@ function buildSummary(transactions) {
 }
 
 // ─── OPERACIONES ─────────────────────────────────────────────
+
+
+// Lee el PIN de acceso único desde Puntuales!C30 del Sheet.
+// Así el PIN es el mismo en todos los dispositivos y no se puede
+// adivinar creando uno nuevo desde el dispositivo.
+async function getPin() {
+  const sheets = await getSheets();
+  const res    = await sheets.spreadsheets.values.get({
+    spreadsheetId: SS_ID,
+    range: 'Puntuales!C30',
+    valueRenderOption: 'UNFORMATTED_VALUE'
+  });
+  const pin = String(res.data.values?.[0]?.[0] ?? '').trim();
+  return { pin };
+}
 
 async function getConfig() {
   return { subcategories: SUBCATEGORIES, categories: CATEGORIES.map(c => c.name) };
@@ -168,12 +185,12 @@ async function getMonthData(monthName) {
       const nota   = row[offset + 3];
       if (!subcat && !monto) continue;
 
-      const d = serialToDate(fecha);
+      const dateStr = serialToDateStr(fecha);
       transactions.push({
         id:          cat.name + '_' + (DATA_START_ROW + i),
         category:    cat.name,
         subcategory: String(subcat || ''),
-        date:        d ? d.toISOString() : String(fecha || ''),
+        date:        dateStr || String(fecha || ''),
         amount:      Number(monto) || 0,
         note:        String(nota || ''),
         row:         DATA_START_ROW + i,
@@ -305,6 +322,7 @@ export default async function handler(req, res) {
     const { action } = req.query;
 
     if (req.method === 'GET') {
+      if (action === 'getPin')          return res.json(await getPin());
       if (action === 'getConfig')       return res.json(await getConfig());
       if (action === 'getMonthData')    return res.json(await getMonthData(req.query.month));
       if (action === 'getAnnualSummary')return res.json(await getAnnualSummary());
