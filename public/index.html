@@ -264,6 +264,17 @@ textarea.form-control { resize: none; height: 80px; line-height: 1.5; }
 .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 700; align-items: center; justify-content: center; padding: 24px; }
 .modal-overlay.show { display: flex; }
 .modal { background: var(--surface); border-radius: var(--radius); padding: 24px; width: 100%; max-width: 340px; }
+/* ─── DESGLOSE MODAL ─── */
+.modal-desglose { max-width: 420px; max-height: 80vh; display: flex; flex-direction: column; padding: 20px; }
+.modal-desglose-body { overflow-y: auto; flex: 1; margin-top: 12px; }
+.desglose-cat-title { font-size: 12px; font-weight: 600; color: var(--muted); letter-spacing: 0.06em; text-transform: uppercase; padding: 10px 0 5px; border-bottom: 0.5px solid var(--border); margin-bottom: 4px; display: flex; justify-content: space-between; }
+.desglose-row { display: flex; align-items: center; justify-content: space-between; padding: 6px 0; border-bottom: 0.5px solid var(--border); gap: 8px; }
+.desglose-row:last-child { border-bottom: none; }
+.desglose-name { font-size: 13px; color: var(--text); flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.desglose-pct  { font-size: 12px; color: var(--muted); min-width: 40px; text-align: right; }
+.desglose-val  { font-size: 13px; font-weight: 600; min-width: 80px; text-align: right; }
+.desglose-link { display: block; text-align: center; font-size: 12px; color: var(--purple); text-decoration: none; margin-top: 10px; padding: 6px; cursor: pointer; opacity: 0.85; }
+.desglose-link:hover { opacity: 1; text-decoration: underline; }
 .modal-title { font-size: 18px; font-weight: 700; margin-bottom: 10px; }
 .modal-body  { font-size: 15px; color: var(--muted); line-height: 1.5; margin-bottom: 22px; }
 .modal-actions { display: flex; gap: 10px; }
@@ -319,6 +330,14 @@ textarea.form-control { resize: none; height: 80px; line-height: 1.5; }
 
 <!-- PIN -->
 <div id="pin-screen">
+  <!-- Botón dark mode: esquina superior derecha, no altera el layout central -->
+  <button onclick="toggleDark()"
+    style="position:absolute;top:max(16px,env(safe-area-inset-top));right:16px;
+           background:var(--surface);border:0.5px solid var(--border);
+           border-radius:50%;width:38px;height:38px;font-size:16px;
+           display:flex;align-items:center;justify-content:center;cursor:pointer;">
+    🌙
+  </button>
   <div style="text-align:center">
     <div class="pin-title" id="pin-title">Mis Gastos</div>
     <!-- FIX 1: pin-sub ahora es un elemento separado sin margin negativo -->
@@ -506,6 +525,17 @@ textarea.form-control { resize: none; height: 80px; line-height: 1.5; }
 
 <div class="toast" id="toast"></div>
 
+<!-- MODAL DESGLOSE -->
+<div class="modal-overlay" id="desglose-modal" onclick="if(event.target===this)closeDesglose()">
+  <div class="modal modal-desglose">
+    <div style="display:flex;align-items:center;justify-content:space-between">
+      <div class="modal-title" style="margin:0;font-size:16px">Desglose de egresos</div>
+      <button onclick="closeDesglose()" style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--muted);line-height:1">×</button>
+    </div>
+    <div class="modal-desglose-body" id="desglose-body"></div>
+  </div>
+</div>
+
 <script>
 // ════ API — reemplaza google.script.run ════
 // Apunta al serverless function en Vercel
@@ -564,8 +594,11 @@ const S = {
   donutChart2:   null,
   annualChart:   null,
   debounce:      null,
-  _histTxs:      [],
-  _histShown:    10
+  _histTxs:       [],
+  _histShown:     10,
+  _desgloseCats:  [],
+  _desgloseSubcat:[],
+  _desgloseTotal:  0
 };
 const txStore = {};
 let valuesHidden = false; // estado del botón de privacidad
@@ -752,6 +785,11 @@ function renderDonut(byCategory, transactions) {
   // Porcentaje para el centro del donut izquierdo (% del total general)
   const totalLabel = valuesHidden ? '$ ••••' : fmtCLPShort(total);
 
+  // Guardar datos actuales para el modal de desglose
+  S._desgloseCats   = cats;
+  S._desgloseSubcat = subcats;
+  S._desgloseTotal  = total;
+
   card.innerHTML = `
     <div class="chart-donut-pair">
       <div class="chart-donut-item">
@@ -774,7 +812,8 @@ function renderDonut(byCategory, transactions) {
         </div>
         <div class="chart-donut-lbl">Por subcategoría</div>
       </div>
-    </div>`;
+    </div>
+    <span class="desglose-link" onclick="openDesglose()">Ver desglose completo ↗</span>`;
 
   // ── Donut izquierdo: categorías ──────────────────────────
   if (S.donutChart) { S.donutChart.destroy(); S.donutChart=null; }
@@ -828,9 +867,10 @@ function renderCatBars(byCategory) {
     ? cats.map(([cat,val])=>{
         const pct     = (val / total * 100).toFixed(1);
         const color   = CAT_COLORS[cat]||'#888';
-        // El % siempre visible — privacidad solo afecta montos nominales
+        // El % siempre visible — privacidad solo afecta montos nominales.
+        // En modo privacidad el % toma el tamaño/peso del valor nominal (12px/600).
         const amtHtml = valuesHidden
-          ? `<span style="font-size:10px;font-weight:400;opacity:0.65">${pct}%</span> <span class="privacy-mask">$ ••••</span>`
+          ? `<span style="font-size:12px;font-weight:600">${pct}%</span> <span class="privacy-mask">$ ••••</span>`
           : `${fmtCLP(val)}<span style="font-size:10px;font-weight:400;opacity:0.65;margin-left:4px">${pct}%</span>`;
         return `
       <div class="cat-row">
@@ -1116,6 +1156,51 @@ function txHTML(t) {
       <div class="tx-date">${fmtDate(t.date)}</div>
     </div>
   </div>`;
+}
+
+// ════ DESGLOSE MODAL ════
+function openDesglose() {
+  const cats    = S._desgloseCats   || [];
+  const subcats = S._desgloseSubcat || [];
+  const total   = S._desgloseTotal  || 1;
+  const subTotal = subcats.reduce((s,[,v])=>s+v,0) || 1;
+
+  // Agrupar subcategorías por su categoría padre
+  const subcatByParent = {};
+  const txs = (S.monthData[MONTHS[S.currentMonth]]?.transactions || [])
+    .filter(t => t.category !== 'INGRESOS' && t.amount > 0);
+  txs.forEach(t => {
+    if (!subcatByParent[t.category]) subcatByParent[t.category] = {};
+    subcatByParent[t.category][t.subcategory] = (subcatByParent[t.category][t.subcategory]||0) + t.amount;
+  });
+
+  let html = '';
+  for (const [cat, catVal] of cats) {
+    const catPct  = (catVal / total * 100).toFixed(1);
+    const catAmt  = valuesHidden ? '<span class="privacy-mask">$ ••••</span>' : fmtCLP(catVal);
+    const color   = CAT_COLORS[cat] || '#888';
+    html += `<div class="desglose-cat-title">
+               <span style="color:${color}">${cap(cat)}</span>
+               <span>${catPct}% &nbsp; ${catAmt}</span>
+             </div>`;
+    const subs = subcatByParent[cat] || {};
+    const subsSorted = Object.entries(subs).sort((a,b)=>b[1]-a[1]);
+    for (const [sub, sv] of subsSorted) {
+      const subPct = (sv / catVal * 100).toFixed(1);
+      const subAmt = valuesHidden ? '<span class="privacy-mask">$ ••••</span>' : fmtCLP(sv);
+      html += `<div class="desglose-row">
+                 <span class="desglose-name">${escHtml(sub)}</span>
+                 <span class="desglose-pct">${subPct}%</span>
+                 <span class="desglose-val">${subAmt}</span>
+               </div>`;
+    }
+  }
+
+  document.getElementById('desglose-body').innerHTML = html || '<div class="empty">Sin datos</div>';
+  document.getElementById('desglose-modal').classList.add('show');
+}
+function closeDesglose() {
+  document.getElementById('desglose-modal').classList.remove('show');
 }
 
 // ════ HELPERS ════
